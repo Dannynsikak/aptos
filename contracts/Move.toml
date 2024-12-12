@@ -1,6 +1,6 @@
 [package]
 name = "NFTMarketplace"
-version = "0.1.0"
+version = "1.0.0"
 
 [addresses]
 NFTMarketplace = "0xc80d98f378efe25cd34d2f561f5b4866ddb31e602db2ab3bc0c9ff6be91cd93c"

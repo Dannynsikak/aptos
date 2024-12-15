@@ -1,14 +1,12 @@
 // TODO# 1: Define Module and Marketplace Address
-address 0xc80d98f378efe25cd34d2f561f5b4866ddb31e602db2ab3bc0c9ff6be91cd93c{
+address 0x05e7fb6f3e268373bb1524c366b5cabb66591cbe34d5dde0bf94542922520e6e{
 
     module NFTMarketplace {
         use 0x1::signer;
         use 0x1::vector;
         use 0x1::coin;
         use 0x1::aptos_coin;
-        use 0x1::option;
         use 0x1::timestamp;
-        use 0x1::error;
 
         // TODO# 2: Define NFT Structure
         struct NFT has store, key {
@@ -21,6 +19,7 @@ address 0xc80d98f378efe25cd34d2f561f5b4866ddb31e602db2ab3bc0c9ff6be91cd93c{
             for_sale: bool,
             rarity: u8 // 1 for common, 2 for rare, 3 for epic, etc.
         }
+        
         struct DutchAuction has store, key {
             nft_id: u64,
             seller: address,
@@ -28,7 +27,9 @@ address 0xc80d98f378efe25cd34d2f561f5b4866ddb31e602db2ab3bc0c9ff6be91cd93c{
             reserve_price: u64,
             duration: u64,
             start_time: u64,
-            is_active: bool
+            is_active: bool,
+            highest_bid: u64, // new field to track the highest Bid
+            highest_bidder: address, // new field to track the highest_bidder
         }
 
 
@@ -112,6 +113,8 @@ address 0xc80d98f378efe25cd34d2f561f5b4866ddb31e602db2ab3bc0c9ff6be91cd93c{
                 duration,
                 start_time: current_time,
                 is_active: true,
+                highest_bid: 0, // initialize the highest bid to be 0
+                highest_bidder: signer::address_of(account), // initialize highest bidder to the seller or default address
             };
 
             vector::push_back(&mut auction_house.auctions, auction);
@@ -123,7 +126,7 @@ address 0xc80d98f378efe25cd34d2f561f5b4866ddb31e602db2ab3bc0c9ff6be91cd93c{
             marketplace_addr: address,
             auction_id: u64,
             payment: u64
-        ) acquires AuctionHouse, Marketplace {
+        ) acquires AuctionHouse {
             let auction_house = borrow_global_mut<AuctionHouse>(marketplace_addr);
             let auction_ref = vector::borrow_mut(&mut auction_house.auctions, auction_id);
 
@@ -136,20 +139,11 @@ address 0xc80d98f378efe25cd34d2f561f5b4866ddb31e602db2ab3bc0c9ff6be91cd93c{
             let price_drop = (auction_ref.start_price - auction_ref.reserve_price) * elapsed_time / auction_ref.duration;
             let current_price = auction_ref.start_price - price_drop;
 
-            assert!(payment >= current_price, 202); // payment must meet or exceed current price 
+            assert!(payment >= current_price, 202); // payment must meet or exceed current price
 
-            let marketplace = borrow_global_mut<Marketplace>(marketplace_addr);
-            let nft_ref = vector::borrow_mut(&mut marketplace.nfts, auction_ref.nft_id);
-
-            // finalize sale 
-            nft_ref.owner = signer::address_of(account);
-            nft_ref.for_sale = false;
-
-            // transfer funds
-            coin::transfer<aptos_coin::AptosCoin>(account, auction_ref.seller, payment);
-
-            // mark auction as inactive
-            auction_ref.is_active = false;
+            // update highest bid and bidder
+            auction_ref.highest_bid = payment;
+            auction_ref.highest_bidder = signer::address_of(account); // Track the current highest bidder
         }
 
         // finalize auction 
@@ -158,19 +152,45 @@ address 0xc80d98f378efe25cd34d2f561f5b4866ddb31e602db2ab3bc0c9ff6be91cd93c{
             marketplace_addr: address,
             auction_id: u64
         ) acquires AuctionHouse, Marketplace {
+            // Borrow the AuctionHouse resource for the given marketplace address
             let auction_house = borrow_global_mut<AuctionHouse>(marketplace_addr);
+
+            //validate the auctionID and borrow a mutable refrence to the auction
+            assert!(auction_id < vector::length(&auction_house.auctions), 301); // Invalid auction id
+
             let auction_ref = vector::borrow_mut(&mut auction_house.auctions, auction_id);
 
+            // Ensure the auction has ended
             let current_time = timestamp::now_seconds();
-            assert!(current_time >= auction_ref.start_time + auction_ref.duration, 300); // auction must have ended
-
+            assert!(current_time >= auction_ref.start_time + auction_ref.duration, 300); // auction has not ended yet
+            
+            // proceed only if the auction is active
             if (auction_ref.is_active) {
                 let marketplace = borrow_global_mut<Marketplace>(marketplace_addr);
+                // Validate the NFT ID and borrow a mutable reference to the NFT
+                assert!(
+                    auction_ref.nft_id < vector::length(&marketplace.nfts),
+                    302 // Invalid NFT ID
+                );
                 let nft_ref = vector::borrow_mut(&mut marketplace.nfts, auction_ref.nft_id);
 
-                // return NFT to the seller 
-                nft_ref.owner = auction_ref.seller;
-                nft_ref.for_sale = false;
+                if (auction_ref.highest_bid > 0) {
+                    // transfer ownership to the highest bidder 
+                    nft_ref.owner = auction_ref.highest_bidder;
+                    nft_ref.for_sale = false;
+
+                    // calculate markeplace fee
+                    let fee = (auction_ref.highest_bid * MARKETPLACE_FEE_PERCENT) / 100;
+                    let seller_revenue = auction_ref.highest_bid - fee;
+
+                    // transfer funds
+                    coin::transfer<aptos_coin::AptosCoin>(account, marketplace_addr, fee); // fee to marketplace
+                    coin::transfer<aptos_coin::AptosCoin>(account, auction_ref.seller, seller_revenue); // reserve to seller 
+                } else {
+                    // return NFT to the seller if no bids were placed
+                    nft_ref.owner = auction_ref.seller;
+                    nft_ref.for_sale = false;
+                };
 
                 // mark auction as inactive
                 auction_ref.is_active = false;

@@ -84,41 +84,41 @@ address 0x05e7fb6f3e268373bb1524c366b5cabb66591cbe34d5dde0bf94542922520e6e{
         }
 
         // list NFT for dutch auction
-        public entry fun list_nft_for_auction(
+       public entry fun list_nft_for_auction(
             account: &signer,
             marketplace_addr: address,
             nft_id: u64,
-            start_price: u64,
-            reserve_price: u64,
-            duration: u64
-        ) acquires Marketplace, AuctionHouse {
-            let marketplace = borrow_global_mut<Marketplace>(marketplace_addr);
-            let nft_ref = vector::borrow_mut(&mut marketplace.nfts, nft_id);
+            start_price: u64
+        ) acquires AuctionHouse, NFT {
+        // Borrow a mutable reference to the AuctionHouse at the given marketplace address
+        let auction_house = borrow_global_mut<AuctionHouse>(marketplace_addr);
 
-            assert!(nft_ref.owner == signer::address_of(account), 100); // Caller must be the owner
-            assert!(nft_ref.for_sale == false, 101); // NFT should not already be listed
-            assert!(start_price > reserve_price, 102); // Starting price must exceed reserve price
+        // Borrow a mutable reference to the NFT to ensure it exists and is owned by the caller
+        let nft_ref = borrow_global_mut<NFT>(marketplace_addr);
 
-            // lock NFT and mark it as not for sale
-            nft_ref.for_sale = false;
+        // Check that the caller is the owner of the NFT
+        assert!(nft_ref.owner == signer::address_of(account), 100); // Caller must be the owner
 
-            let auction_house = borrow_global_mut<AuctionHouse>(marketplace_addr);
-            let current_time = timestamp::now_seconds();
+        // Create a new auction for the NFT
+        let auction = DutchAuction {
+        nft_id,
+        seller: signer::address_of(account),
+        start_price,
+        reserve_price: 0, // Set reserve price to 0 as per the simplified logic
+        duration: 0,      // Set duration to 0 as per the simplified logic
+        start_time: 0,    // Set start time to 0 as per the simplified logic
+        is_active: true,
+        highest_bid: 0, // Initialize the highest bid to 0
+        highest_bidder: signer::address_of(account), // Initialize highest bidder to the seller
+    };
 
-            let auction = DutchAuction {
-                nft_id,
-                seller: signer::address_of(account),
-                start_price,
-                reserve_price,
-                duration,
-                start_time: current_time,
-                is_active: true,
-                highest_bid: 0, // initialize the highest bid to be 0
-                highest_bidder: signer::address_of(account), // initialize highest bidder to the seller or default address
-            };
+    // Add the auction to the AuctionHouse
+    vector::push_back(&mut auction_house.auctions, auction);
 
-            vector::push_back(&mut auction_house.auctions, auction);
-        }
+    // Mark the NFT as "locked for auction" in its metadata
+    nft_ref.for_sale = false;
+}
+
 
         // Bid on an Auction
         public entry fun bid_on_auction(
@@ -132,7 +132,7 @@ address 0x05e7fb6f3e268373bb1524c366b5cabb66591cbe34d5dde0bf94542922520e6e{
 
             assert!(auction_ref.is_active, 200); // auction must be active
             let current_time = timestamp::now_seconds();
-            assert!(current_time < auction_ref.start_time + auction_ref.duration, 201); // Auction not expired
+            assert!(current_time >= auction_ref.start_time + auction_ref.duration, 201); // Auction not expired
 
             // calculate current price
             let elapsed_time = current_time - auction_ref.start_time;

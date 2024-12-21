@@ -1,5 +1,5 @@
 // TODO# 1: Define Module and Marketplace Address
-address 0x05e7fb6f3e268373bb1524c366b5cabb66591cbe34d5dde0bf94542922520e6e{
+address 0x05e7fb6f3e268373bb1524c366b5cabb66591cbe34d5dde0bf94542922520e6e {
 
     module NFTMarketplace {
         use 0x1::signer;
@@ -89,12 +89,15 @@ address 0x05e7fb6f3e268373bb1524c366b5cabb66591cbe34d5dde0bf94542922520e6e{
             marketplace_addr: address,
             nft_id: u64,
             start_price: u64
-        ) acquires AuctionHouse, NFT {
+        ) acquires AuctionHouse, Marketplace {
         // Borrow a mutable reference to the AuctionHouse at the given marketplace address
         let auction_house = borrow_global_mut<AuctionHouse>(marketplace_addr);
 
+        // Borrow a mutable reference to the Marketplace to access the NFTs
+        let marketplace = borrow_global_mut<Marketplace>(marketplace_addr);
+
         // Borrow a mutable reference to the NFT to ensure it exists and is owned by the caller
-        let nft_ref = borrow_global_mut<NFT>(marketplace_addr);
+        let nft_ref = vector::borrow_mut(&mut marketplace.nfts, nft_id);
 
         // Check that the caller is the owner of the NFT
         assert!(nft_ref.owner == signer::address_of(account), 100); // Caller must be the owner
@@ -114,9 +117,6 @@ address 0x05e7fb6f3e268373bb1524c366b5cabb66591cbe34d5dde0bf94542922520e6e{
 
     // Add the auction to the AuctionHouse
     vector::push_back(&mut auction_house.auctions, auction);
-
-    // Mark the NFT as "locked for auction" in its metadata
-    nft_ref.for_sale = false;
 }
 
 

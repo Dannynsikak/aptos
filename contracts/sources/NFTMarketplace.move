@@ -2,12 +2,35 @@
 address 0x05e7fb6f3e268373bb1524c366b5cabb66591cbe34d5dde0bf94542922520e6e {
 
     module NFTMarketplace {
-        use 0x1::signer;
-        use 0x1::vector;
-        use 0x1::coin;
-        use 0x1::aptos_coin;
-        use 0x1::timestamp;
+        use std::error;
+        use std::string::{Self, String};
+        use std::option;
+        use std::signer;
+        use std::vector;
+        use std::coin;
+        use std::aptos_coin;
+        use std::timestamp;
+        use aptos_token_objects::token::{Self, Token};
+        use aptos_framework::event;
+        use aptos_framework::object::{Self, Object, TransferRef};
+        use aptos_framework::fungible_asset::{Metadata};
+        use aptos_framework::primary_fungible_store;
+        use aptos_framework::timestamp;
+        use aptos_token_objects::collection;
+        use aptos_token_objects::collection::Collection;
 
+
+        const ENOT_OWNER: u64 = 1;
+        const ETOKEN_SOLD: u64 = 2;
+        const EINVALID_AUCTION_OBJECT: u64 = 3;
+        const EOUTDATED_AUCTION: u64 = 4;
+        const EINVALID_PRICES: u64 = 5;
+        const EINVALID_DURATION: u64 = 6;
+        const DUTCH_AUCTION_COLLECTION_NAME: vector<u8> = b"DUTCH_AUCTION_NAME";
+        const DUTCH_AUCTION_COLLECTION_DESCRIPTION: vector<u8> = b"DUTCH_AUCTION_DESCRIPTION";
+        const DUTCH_AUCTION_COLLECTION_URI: vector<u8> = b"DUTCH_AUCTION_URI";
+
+        const DUTCH_AUCTION_SEED_PREFIX: vector<u8> = b"AUCTION_SEED_PREFIX";
         // TODO# 2: Define NFT Structure
         struct NFT has store, key {
             id: u64,
@@ -19,27 +42,34 @@ address 0x05e7fb6f3e268373bb1524c366b5cabb66591cbe34d5dde0bf94542922520e6e {
             for_sale: bool,
             rarity: u8 // 1 for common, 2 for rare, 3 for epic, etc.
         }
-        
+        #[resource_group_member(group = aptos_framework::object::ObjectGroup)]
         struct DutchAuction has store, key {
             nft_id: u64,
-            seller: address,
-            start_price: u64,
-            reserve_price: u64,
+            description: vector<u8>,
+            owner: address,
+            uri: vector<u8>,
+            sell_token: Object<Token>,
+            buy_token: Object<Metadata>,
+            max_price: u64,
+            min_price: u64,
             duration: u64,
             start_time: u64,
-            is_active: bool,
-            highest_bid: u64, // new field to track the highest Bid
-            highest_bidder: address, // new field to track the highest_bidder
+            sold: bool,
         }
 
-
+        #[resource_group_member(group = aptos_framework::object::ObjectGroup)]
+        struct TokenConfig has key, drop {
+            transfer_ref: TransferRef
+        }
+        
+       
         // TODO# 3: Define Marketplace Structure
         struct Marketplace has key {
             nfts: vector<NFT>
         }
-
-        struct AuctionHouse has store, key {
-            auctions: vector<DutchAuction>
+        #[event]
+        struct AuctionHouse has drop, store {
+            auction: Object<DutchAuction>
         }
 
         
@@ -85,139 +115,144 @@ address 0x05e7fb6f3e268373bb1524c366b5cabb66591cbe34d5dde0bf94542922520e6e {
 
         // list NFT for dutch auction
        public entry fun list_nft_for_auction(
-            account: &signer,
+            owner: &signer,
+            name: String,
+            description: String,
+            uri: String,
+            buy_token: Object<Metadata>,
             marketplace_addr: address,
             nft_id: u64,
-            start_price: u64
+            max_price: u64,
+            min_price: u64,
         ) acquires AuctionHouse, Marketplace {
-        // Borrow a mutable reference to the AuctionHouse at the given marketplace address
-        let auction_house = borrow_global_mut<AuctionHouse>(marketplace_addr);
+            only_owner(owner);
+            assert!(max_price >= min_price, error::invalid_argument(EINVALID_PRICES));
+            assert!(duration > 0, error::invalid_argument(EINVALID_DURATION));
+            
+            let collection_name = string::utf8(DUTCH_AUCTION_COLLECTION_NAME);
 
-        // Borrow a mutable reference to the Marketplace to access the NFTs
-        let marketplace = borrow_global_mut<Marketplace>(marketplace_addr);
+            let sell_token_ctor = token::create_named_token(
+                owner,
+                collection_name,
+                description,
+                name,
+                option::none(),
+                uri,
+            );
+            let transfer_ref = object::generate_transfer_ref(&sell_token_ctor);
+            let sell_token = object::object_from_constructor_ref<Token>(&sell_token_ctor);
 
-        // Borrow a mutable reference to the NFT to ensure it exists and is owned by the caller
-        let nft_ref = vector::borrow_mut(&mut marketplace.nfts, nft_id);
+            let auction = Auction {
+                sell_token,
+                buy_token,
+                max_price,
+                min_price,
+                duration,
+                started_at: timestamp::now_seconds(),
+            };
+            let auction_seed = get_auction_seed(name);
+            let auction_ctor = object::create_named_object(owner,auction_seed);
+            let auction_signer = object::generate_signer(&auction_ctor);
 
-        // Check that the caller is the owner of the NFT
-        assert!(nft_ref.owner == signer::address_of(account), 100); // Caller must be the owner
+            move_to(&auction_signer, auction);
+            move_to(&auction_signer, TokenConfig {transfer_ref});
 
-        // Create a new auction for the NFT
-        let auction = DutchAuction {
-        nft_id,
-        seller: signer::address_of(account),
-        start_price,
-        reserve_price: 0, // Set reserve price to 0 as per the simplified logic
-        duration: 0,      // Set duration to 0 as per the simplified logic
-        start_time: 0,    // Set start time to 0 as per the simplified logic
-        is_active: true,
-        highest_bid: 0, // Initialize the highest bid to 0
-        highest_bidder: signer::address_of(account), // Initialize highest bidder to the seller
-    };
+            let auction = object::object_from_constructor_ref<Auction>(&auction_ctor);
+            event::emit(AuctionCreated {auction});
+        }
+        fun get_collection_seed(): vector<u8> {
+            DUTCH_AUCTION_COLLECTION_NAME
+        }
 
-    // Add the auction to the AuctionHouse
-    vector::push_back(&mut auction_house.auctions, auction);
-}
+        fun get_token_seed(name: String): vector<u8> {
+            let collection_name = string::utf8(DUTCH_AUCTION_COLLECTION_NAME);
 
+            /// concatenate collection_name::name
+            token::create_token_seed(&collection_name, &name)
+        }
+        fun get_auction_seed(name: String): vector<u8> {
+            let token_seed = get_token_seed(name);
+            let seed = DUTCH_AUCTION_SEED_PREFIX;
+            vector::append(&mut seed, b"::");
+            vector::append(&mut seed, token_seed);
+
+            seed
+        }
+
+        inline fun only_owner(owner: &signer) {
+            assert!(signer::address_of(owner) == address, error::permission_denied(ENOT_OWNER) )
+        }
 
         // Bid on an Auction
         public entry fun bid_on_auction(
-            account: &signer,
-            marketplace_addr: address,
-            auction_id: u64,
-            payment: u64
-        ) acquires AuctionHouse {
-            let auction_house = borrow_global_mut<AuctionHouse>(marketplace_addr);
-            let auction_ref = vector::borrow_mut(&mut auction_house.auctions, auction_id);
+            customer: &signer, auction: Object<DutchAuction>
+        ) acquires DutchAuction, TokenConfig {
+            let auction_address = object_address(&auction);
+            let auction = borrow_global_mut<DutchAuction>(auction_address);
 
-            assert!(auction_ref.is_active, 200); // auction must be active
-            let current_time = timestamp::now_seconds();
-            assert!(current_time >= auction_ref.start_time + auction_ref.duration, 201); // Auction not expired
+            assert!(exists<TokenConfig>(auction_address), error::unavailable(ETOKEN_SOLD));
 
-            // calculate current price
-            let elapsed_time = current_time - auction_ref.start_time;
-            let price_drop = (auction_ref.start_price - auction_ref.reserve_price) * elapsed_time / auction_ref.duration;
-            let current_price = auction_ref.start_price - price_drop;
+            let current_price = must_have_price(auction);
 
-            assert!(payment >= current_price, 202); // payment must meet or exceed current price
+            primary_fungible_store::transfer(customer, auction.buy_token, address, current_price);
 
-            // update highest bid and bidder
-            auction_ref.highest_bid = payment;
-            auction_ref.highest_bidder = signer::address_of(account); // Track the current highest bidder
+            let transfer_ref = &borrow_global_mut<TokenConfig>(auction_address).transfer_ref;
+            let linear_transfer_ref = object::generate_linear_transfer_ref(transfer_ref);
+
+            object::transfer_with_ref(linear_transfer_ref, signer::address_of(customer));
+
+            move_from<TokenConfig>(auction_address);
         }
 
-        // finalize auction 
-        public entry fun finalize_auction(
-            account: &signer,
-            marketplace_addr: address,
-            auction_id: u64
-        ) acquires AuctionHouse, Marketplace {
-            // Borrow the AuctionHouse resource for the given marketplace address
-            let auction_house = borrow_global_mut<AuctionHouse>(marketplace_addr);
+        fun must_have_price(auction: &DutchAuction): u64 {
+            let time_now = timestamp::now_seconds();
 
-            //validate the auctionID and borrow a mutable refrence to the auction
-            assert!(auction_id < vector::length(&auction_house.auctions), 301); // Invalid auction id
+            assert!(time_now <= auction.started_at + auction.duration, error::unavailable(EOUTDATED_AUCTION));
 
-            let auction_ref = vector::borrow_mut(&mut auction_house.auctions, auction_id);
+            let time_passed = time_now - auction.started_at;
+            let discount = ((auction.max_price - auction.min_price) * time_passed) / auction.duration;
 
-            // Ensure the auction has ended
-            let current_time = timestamp::now_seconds();
-            assert!(current_time >= auction_ref.start_time + auction_ref.duration, 300); // auction has not ended yet
-            
-            // proceed only if the auction is active
-            if (auction_ref.is_active) {
-                let marketplace = borrow_global_mut<Marketplace>(marketplace_addr);
-                // Validate the NFT ID and borrow a mutable reference to the NFT
-                assert!(
-                    auction_ref.nft_id < vector::length(&marketplace.nfts),
-                    302 // Invalid NFT ID
-                );
-                let nft_ref = vector::borrow_mut(&mut marketplace.nfts, auction_ref.nft_id);
-
-                if (auction_ref.highest_bid > 0) {
-                    // transfer ownership to the highest bidder 
-                    nft_ref.owner = auction_ref.highest_bidder;
-                    nft_ref.for_sale = false;
-
-                    // calculate markeplace fee
-                    let fee = (auction_ref.highest_bid * MARKETPLACE_FEE_PERCENT) / 100;
-                    let seller_revenue = auction_ref.highest_bid - fee;
-
-                    // transfer funds
-                    coin::transfer<aptos_coin::AptosCoin>(account, marketplace_addr, fee); // fee to marketplace
-                    coin::transfer<aptos_coin::AptosCoin>(account, auction_ref.seller, seller_revenue); // reserve to seller 
-                } else {
-                    // return NFT to the seller if no bids were placed
-                    nft_ref.owner = auction_ref.seller;
-                    nft_ref.for_sale = false;
-                };
-
-                // mark auction as inactive
-                auction_ref.is_active = false;
-            }
+            auction.max_price - discount
         }
 
         // retrieve active auctions
         #[view]
-        public fun get_active_auctions(marketplace_addr: address): vector<u64> acquires AuctionHouse {
-            let auction_house = borrow_global<AuctionHouse>(marketplace_addr);
-            let active_auction_ids = vector::empty<u64>();
+       public fun get_auction_object(name: String): Object<DutchAuction> {
+            let auction_seed = get_auction_seed(name);
+            let auction_address = object::create_object_address(&address, auction_seed);
 
-            let auction_len = vector::length(&auction_house.auctions);
+            object::address_to_object(auction_address)
+        }
+        #[view]
+        public fun get_collection_object(): Object<Collection> {
+            let collection_seed = get_collection_seed();
+            let collection_address = object::create_object_address(&address, collection_seed);
 
-            let mut_i = 0;
-            while (mut_i < auction_len) {
-                let auction = vector::borrow(&auction_house.auctions, mut_i);
-                if (auction.is_active) {
-                    vector::push_back(&mut active_auction_ids, auction.nft_id);
-                };
-                mut_i = mut_i + 1;
-            };
-            active_auction_ids
+            object::address_to_object(collection_address)
         }
 
+        #[view]
+        public fun get_token_object(name: String): Object<Token> {
+            let token_seed = get_token_seed(name);
+            let token_object = object::create_object_address(&address, token_seed);
 
+            object::address_of_object<Token>(token_object)
+        }
 
+        #[view]
+        public fun get_auction(auction_object: Object<DutchAuction>: Auction acquires DutchAuction) {
+            let auction_address = object::object_address(&auction_object);
+            let auction = borrow_global<DutchAuction>(auction_address);
+
+            Auction {
+                sell_token: auction.sell_token,
+                buy_token: auction.buy_token,
+                max_price: auction.max_price,
+                min_price: auction.min_price,
+                duration: auction.duration,
+                started_at: auction.started_at
+            }
+        }
         // TODO# 8: Mint New NFT
          public entry fun mint_nft(account: &signer, name: vector<u8>, description: vector<u8>, uri: vector<u8>, rarity: u8) acquires Marketplace {
             let marketplace = borrow_global_mut<Marketplace>(signer::address_of(account));
@@ -408,5 +443,80 @@ address 0x05e7fb6f3e268373bb1524c366b5cabb66591cbe34d5dde0bf94542922520e6e {
 
             nft_ids
         }
+        #[test(aptos_framework = @std, owner = address, customer = @0x1234)]
+        fun test_auction_happy_path(
+            aptos_framework: &signer,
+            owner: &signer,
+            customer: &signer
+        ) acquires Auction, TokenConfig {
+            init_module(owner);
+
+            timestamp::set_time_has_started_for_testing(aptos_framework);
+            timestamp::update_global_time_for_test_secs(1000);
+
+            let buy_token = setup_buy_token(owner, customer);
+
+            let name = string::utf8(b"name");
+            let description = string::utf8(b"description");
+            let uri = string::utf8(b"uri");
+            let max_price = 10;
+            let min_price = 1;
+            let duration = 300;
+
+            start_auction(
+                owner,
+                name,
+                description,
+                uri,
+                buy_token,
+                max_price,
+                min_price,
+                duration
+            );
+
+            let token = get_token_object(name);
+
+            assert!(object::is_owner(token, @address), 1);
+
+            let auction_created_events = event::emitted_events<AuctionCreated>();
+            let auction = vector::borrow(&auction_created_events, 0).auction;
+
+            assert!(auction == get_auction_object(name), 1);
+            assert!(primary_fungible_store::balance(signer::address_of(customer), buy_token) == 50, 1);
+
+        bid(customer, auction);
+
+        assert!(object::is_owner(token, signer::address_of(customer)), 1);
+        assert!(primary_fungible_store::balance(signer::address_of(customer), buy_token) == 40, 1);
+    }
+
+    #[test_only]
+    fun setup_buy_token(owner: &signer, customer: &signer): Object<Metadata> {
+        use aptos_framework::fungible_asset;
+
+        let ctor_ref = object::create_sticky_object(signer::address_of(owner));
+
+        primary_fungible_store::create_primary_store_enabled_fungible_asset(
+            &ctor_ref,
+            option::none<u128>(),
+            string::utf8(b"token"),
+            string::utf8(b"symbol"),
+            0,
+            string::utf8(b"icon_uri"),
+            string::utf8(b"project_uri")
+        );
+
+        let metadata = object::object_from_constructor_ref<Metadata>(&ctor_ref);
+        let mint_ref = fungible_asset::generate_mint_ref(&ctor_ref);
+
+        let customer_store = primary_fungible_store::ensure_primary_store_exists(
+            signer::address_of(customer),
+            metadata
+        );
+
+        fungible_asset::mint_to(&mint_ref, customer_store, 50);
+
+        metadata
+    }
     }
 }

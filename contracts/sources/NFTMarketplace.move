@@ -1,23 +1,22 @@
 // TODO# 1: Define Module and Marketplace Address
-address 0x05e7fb6f3e268373bb1524c366b5cabb66591cbe34d5dde0bf94542922520e6e {
+address  0x05e7fb6f3e268373bb1524c366b5cabb66591cbe34d5dde0bf94542922520e6e {
 
     module NFTMarketplace {
-        use std::error;
-        use std::string::{Self, String};
-        use std::option;
-        use std::signer;
-        use std::vector;
-        use std::coin;
-        use std::aptos_coin;
-        use std::timestamp;
+        use 0x1::error;
+        use 0x1::string::{Self, String};
+        use 0x1::option;
+        use 0x1::signer;
+        use 0x1::vector;
+        use 0x1::coin;
+        use 0x1::aptos_coin;
+        use 0x1::timestamp;
         use aptos_token_objects::token::{Self, Token};
         use aptos_framework::event;
         use aptos_framework::object::{Self, Object, TransferRef};
         use aptos_framework::fungible_asset::{Metadata};
         use aptos_framework::primary_fungible_store;
-        use aptos_framework::timestamp;
-        use aptos_token_objects::collection;
         use aptos_token_objects::collection::Collection;
+        use aptos_token_objects::collection;
 
 
         const ENOT_OWNER: u64 = 1;
@@ -43,18 +42,11 @@ address 0x05e7fb6f3e268373bb1524c366b5cabb66591cbe34d5dde0bf94542922520e6e {
             rarity: u8 // 1 for common, 2 for rare, 3 for epic, etc.
         }
         #[resource_group_member(group = aptos_framework::object::ObjectGroup)]
-        struct DutchAuction has store, key {
+        struct DutchAuction has drop, store, key {
             nft_id: u64,
             description: vector<u8>,
             owner: address,
             uri: vector<u8>,
-            sell_token: Object<Token>,
-            buy_token: Object<Metadata>,
-            max_price: u64,
-            min_price: u64,
-            duration: u64,
-            start_time: u64,
-            sold: bool,
         }
 
         #[resource_group_member(group = aptos_framework::object::ObjectGroup)]
@@ -68,8 +60,13 @@ address 0x05e7fb6f3e268373bb1524c366b5cabb66591cbe34d5dde0bf94542922520e6e {
             nfts: vector<NFT>
         }
         #[event]
-        struct AuctionHouse has drop, store {
-            auction: Object<DutchAuction>
+        struct AuctionHouse has key {
+            sell_token: Object<Token>,
+            duration: u64,
+            buy_token: Object<Metadata>,
+            max_price: u64,
+            min_price: u64,
+            started_at: u64,
         }
 
         
@@ -101,11 +98,11 @@ address 0x05e7fb6f3e268373bb1524c366b5cabb66591cbe34d5dde0bf94542922520e6e {
 
         // initialize Auction house 
         public entry fun initialize_auction_house(account: &signer) {
-            assert!(!exists<AuctionHouse>(signer::address_of(account)), 600); // Prevent re-initialization
-            let auction_house = AuctionHouse {
-                auctions: vector::empty<DutchAuction>()
-            };
-            move_to(account, auction_house);
+            let description = string::utf8(DUTCH_AUCTION_COLLECTION_DESCRIPTION);
+            let name = string::utf8(DUTCH_AUCTION_COLLECTION_NAME);
+            let uri = string::utf8(DUTCH_AUCTION_COLLECTION_URI);
+
+            collection::create_unlimited_collection(account, description, name, option::none(),uri);
         }
 
         #[view]
@@ -124,6 +121,7 @@ address 0x05e7fb6f3e268373bb1524c366b5cabb66591cbe34d5dde0bf94542922520e6e {
             nft_id: u64,
             max_price: u64,
             min_price: u64,
+            duration: u64
         ) acquires AuctionHouse, Marketplace {
             only_owner(owner);
             assert!(max_price >= min_price, error::invalid_argument(EINVALID_PRICES));
@@ -142,7 +140,7 @@ address 0x05e7fb6f3e268373bb1524c366b5cabb66591cbe34d5dde0bf94542922520e6e {
             let transfer_ref = object::generate_transfer_ref(&sell_token_ctor);
             let sell_token = object::object_from_constructor_ref<Token>(&sell_token_ctor);
 
-            let auction = Auction {
+            let auction = AuctionHouse {
                 sell_token,
                 buy_token,
                 max_price,
@@ -157,7 +155,7 @@ address 0x05e7fb6f3e268373bb1524c366b5cabb66591cbe34d5dde0bf94542922520e6e {
             move_to(&auction_signer, auction);
             move_to(&auction_signer, TokenConfig {transfer_ref});
 
-            let auction = object::object_from_constructor_ref<Auction>(&auction_ctor);
+            let auction = object::object_from_constructor_ref<AuctionHouse>(&auction_ctor);
             event::emit(AuctionCreated {auction});
         }
         fun get_collection_seed(): vector<u8> {
@@ -167,7 +165,7 @@ address 0x05e7fb6f3e268373bb1524c366b5cabb66591cbe34d5dde0bf94542922520e6e {
         fun get_token_seed(name: String): vector<u8> {
             let collection_name = string::utf8(DUTCH_AUCTION_COLLECTION_NAME);
 
-            /// concatenate collection_name::name
+            /// concatinates collection_name::token_name
             token::create_token_seed(&collection_name, &name)
         }
         fun get_auction_seed(name: String): vector<u8> {
@@ -240,7 +238,7 @@ address 0x05e7fb6f3e268373bb1524c366b5cabb66591cbe34d5dde0bf94542922520e6e {
         }
 
         #[view]
-        public fun get_auction(auction_object: Object<DutchAuction>: Auction acquires DutchAuction) {
+        public fun get_auction(auction_object: Object<DutchAuction>): Auction acquires DutchAuction {
             let auction_address = object::object_address(&auction_object);
             let auction = borrow_global<DutchAuction>(auction_address);
 

@@ -19,6 +19,7 @@ address  0x05e7fb6f3e268373bb1524c366b5cabb66591cbe34d5dde0bf94542922520e6e {
         use aptos_token_objects::collection;
 
 
+
         const ENOT_OWNER: u64 = 1;
         const ETOKEN_SOLD: u64 = 2;
         const EINVALID_AUCTION_OBJECT: u64 = 3;
@@ -43,10 +44,18 @@ address  0x05e7fb6f3e268373bb1524c366b5cabb66591cbe34d5dde0bf94542922520e6e {
         }
         #[resource_group_member(group = aptos_framework::object::ObjectGroup)]
         struct DutchAuction has drop, store, key {
-            nft_id: u64,
+            _nft_id: u64,
             description: vector<u8>,
             owner: address,
             uri: vector<u8>,
+        }
+        struct AuctionHouse has key {
+            sell_token: Object<Token>,
+            duration: u64,
+            buy_token: Object<Metadata>,
+            max_price: u64,
+            min_price: u64,
+            started_at: u64,
         }
 
         #[resource_group_member(group = aptos_framework::object::ObjectGroup)]
@@ -60,14 +69,10 @@ address  0x05e7fb6f3e268373bb1524c366b5cabb66591cbe34d5dde0bf94542922520e6e {
             nfts: vector<NFT>
         }
         #[event]
-        struct AuctionHouse has key {
-            sell_token: Object<Token>,
-            duration: u64,
-            buy_token: Object<Metadata>,
-            max_price: u64,
-            min_price: u64,
-            started_at: u64,
+        struct AuctionCreated has drop, store {
+            auction: Object<AuctionHouse>
         }
+        
 
         
         // TODO# 4: Define ListedNFT Structure
@@ -117,13 +122,11 @@ address  0x05e7fb6f3e268373bb1524c366b5cabb66591cbe34d5dde0bf94542922520e6e {
             description: String,
             uri: String,
             buy_token: Object<Metadata>,
-            marketplace_addr: address,
-            nft_id: u64,
             max_price: u64,
             min_price: u64,
             duration: u64
-        ) acquires AuctionHouse, Marketplace {
-            only_owner(owner);
+        ) {
+            only_owner(owner, signer::address_of(owner));
             assert!(max_price >= min_price, error::invalid_argument(EINVALID_PRICES));
             assert!(duration > 0, error::invalid_argument(EINVALID_DURATION));
             
@@ -165,7 +168,7 @@ address  0x05e7fb6f3e268373bb1524c366b5cabb66591cbe34d5dde0bf94542922520e6e {
         fun get_token_seed(name: String): vector<u8> {
             let collection_name = string::utf8(DUTCH_AUCTION_COLLECTION_NAME);
 
-            /// concatinates collection_name::token_name
+            // concatenates collection_name::token_name
             token::create_token_seed(&collection_name, &name)
         }
         fun get_auction_seed(name: String): vector<u8> {
@@ -177,22 +180,22 @@ address  0x05e7fb6f3e268373bb1524c366b5cabb66591cbe34d5dde0bf94542922520e6e {
             seed
         }
 
-        inline fun only_owner(owner: &signer) {
-            assert!(signer::address_of(owner) == address, error::permission_denied(ENOT_OWNER) )
+        inline fun only_owner(owner: &signer , addr: address) {
+            assert!(signer::address_of(owner) == addr, error::permission_denied(ENOT_OWNER) )
         }
 
         // Bid on an Auction
         public entry fun bid_on_auction(
-            customer: &signer, auction: Object<DutchAuction>
-        ) acquires DutchAuction, TokenConfig {
-            let auction_address = object_address(&auction);
-            let auction = borrow_global_mut<DutchAuction>(auction_address);
+            customer: &signer, auction: Object<AuctionHouse>
+        ) acquires AuctionHouse, TokenConfig {
+            let auction_address = object::object_address(&auction);
+            let auction = borrow_global_mut<AuctionHouse>(auction_address);
 
             assert!(exists<TokenConfig>(auction_address), error::unavailable(ETOKEN_SOLD));
 
             let current_price = must_have_price(auction);
 
-            primary_fungible_store::transfer(customer, auction.buy_token, address, current_price);
+            primary_fungible_store::transfer(customer, auction.buy_token, auction_address, current_price);
 
             let transfer_ref = &borrow_global_mut<TokenConfig>(auction_address).transfer_ref;
             let linear_transfer_ref = object::generate_linear_transfer_ref(transfer_ref);
@@ -202,7 +205,7 @@ address  0x05e7fb6f3e268373bb1524c366b5cabb66591cbe34d5dde0bf94542922520e6e {
             move_from<TokenConfig>(auction_address);
         }
 
-        fun must_have_price(auction: &DutchAuction): u64 {
+        fun must_have_price(auction: &AuctionHouse): u64 {
             let time_now = timestamp::now_seconds();
 
             assert!(time_now <= auction.started_at + auction.duration, error::unavailable(EOUTDATED_AUCTION));
@@ -214,35 +217,35 @@ address  0x05e7fb6f3e268373bb1524c366b5cabb66591cbe34d5dde0bf94542922520e6e {
         }
 
         // retrieve active auctions
-        #[view]
-       public fun get_auction_object(name: String): Object<DutchAuction> {
-            let auction_seed = get_auction_seed(name);
-            let auction_address = object::create_object_address(&address, auction_seed);
+    #[view]
+    public fun get_auction_object(name: String, owner_addr: address): Object<AuctionHouse> {
+        let auction_seed = get_auction_seed(name);
+        let auction_address = object::create_object_address(&owner_addr, auction_seed);
 
-            object::address_to_object(auction_address)
-        }
+        object::address_to_object(auction_address)
+    }
         #[view]
-        public fun get_collection_object(): Object<Collection> {
+        public fun get_collection_object(owner_addr: address): Object<Collection> {
             let collection_seed = get_collection_seed();
-            let collection_address = object::create_object_address(&address, collection_seed);
+            let collection_address = object::create_object_address(&owner_addr, collection_seed);
 
             object::address_to_object(collection_address)
         }
 
         #[view]
-        public fun get_token_object(name: String): Object<Token> {
+        public fun get_token_object(name: String, owner_addr: address): Object<Token> {
             let token_seed = get_token_seed(name);
-            let token_object = object::create_object_address(&address, token_seed);
+            let token_object = object::create_object_address(&owner_addr, token_seed);
 
-            object::address_of_object<Token>(token_object)
+            object::address_to_object<Token>(token_object)
         }
 
         #[view]
-        public fun get_auction(auction_object: Object<DutchAuction>): Auction acquires DutchAuction {
+        public fun get_auction(auction_object: Object<AuctionHouse>): AuctionHouse acquires AuctionHouse {
             let auction_address = object::object_address(&auction_object);
-            let auction = borrow_global<DutchAuction>(auction_address);
+            let auction = borrow_global<AuctionHouse>(auction_address);
 
-            Auction {
+            AuctionHouse {
                 sell_token: auction.sell_token,
                 buy_token: auction.buy_token,
                 max_price: auction.max_price,

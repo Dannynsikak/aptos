@@ -1,12 +1,12 @@
 // TODO# 1: Define Module and Marketplace Address
-address  0x05e7fb6f3e268373bb1524c366b5cabb66591cbe34d5dde0bf94542922520e6e {
+address  0x9be9521129d83f8763fa73debaa043e789cfe9096e191d68c39a8e0afdb1e960 {
 
     module NFTMarketplace {
-        use 0x1::error;
-        use 0x1::string::{Self, String};
-        use 0x1::option;
-        use 0x1::signer;
-        use 0x1::vector;
+        use std::error;
+        use std::string::{Self, String};
+        use std::option;
+        use std::signer;
+        use std::vector;
         use 0x1::coin;
         use 0x1::aptos_coin;
         use 0x1::timestamp;
@@ -56,6 +56,11 @@ address  0x05e7fb6f3e268373bb1524c366b5cabb66591cbe34d5dde0bf94542922520e6e {
             max_price: u64,
             min_price: u64,
             started_at: u64,
+        }
+
+        struct Auction has key {
+            auction_house: Object<AuctionHouse>,
+            token_config: Object<TokenConfig>,
         }
 
         #[resource_group_member(group = aptos_framework::object::ObjectGroup)]
@@ -140,8 +145,8 @@ address  0x05e7fb6f3e268373bb1524c366b5cabb66591cbe34d5dde0bf94542922520e6e {
                 option::none(),
                 uri,
             );
-            let transfer_ref = object::generate_transfer_ref(&sell_token_ctor);
             let sell_token = object::object_from_constructor_ref<Token>(&sell_token_ctor);
+            object::move_to_named(owner, sell_token);
 
             let auction = AuctionHouse {
                 sell_token,
@@ -155,9 +160,11 @@ address  0x05e7fb6f3e268373bb1524c366b5cabb66591cbe34d5dde0bf94542922520e6e {
             let auction_ctor = object::create_named_object(owner,auction_seed);
             let auction_signer = object::generate_signer(&auction_ctor);
 
+            let transfer_ref = object::generate_transfer_ref(&auction_ctor);
             move_to(&auction_signer, auction);
-            move_to(&auction_signer, TokenConfig {transfer_ref});
-
+            move_to(&auction_signer, TokenConfig { transfer_ref });
+            let transfer_ref = object::generate_transfer_ref(&auction_ctor);
+            move_to(&auction_signer, TokenConfig { transfer_ref });
             let auction = object::object_from_constructor_ref<AuctionHouse>(&auction_ctor);
             event::emit(AuctionCreated {auction});
         }
@@ -444,13 +451,13 @@ address  0x05e7fb6f3e268373bb1524c366b5cabb66591cbe34d5dde0bf94542922520e6e {
 
             nft_ids
         }
-        #[test(aptos_framework = @std, owner = address, customer = @0x1234)]
+        #[test(aptos_framework = @0x1, owner = @0x2, customer = @0x1234)]
         fun test_auction_happy_path(
             aptos_framework: &signer,
             owner: &signer,
             customer: &signer
-        ) acquires Auction, TokenConfig {
-            init_module(owner);
+        ) acquires TokenConfig, AuctionHouse {
+            initialize(owner);
 
             timestamp::set_time_has_started_for_testing(aptos_framework);
             timestamp::update_global_time_for_test_secs(1000);
@@ -464,7 +471,7 @@ address  0x05e7fb6f3e268373bb1524c366b5cabb66591cbe34d5dde0bf94542922520e6e {
             let min_price = 1;
             let duration = 300;
 
-            start_auction(
+            list_nft_for_auction(
                 owner,
                 name,
                 description,
@@ -475,17 +482,17 @@ address  0x05e7fb6f3e268373bb1524c366b5cabb66591cbe34d5dde0bf94542922520e6e {
                 duration
             );
 
-            let token = get_token_object(name);
+            let token = get_token_object(name, signer::address_of(owner));
 
-            assert!(object::is_owner(token, @address), 1);
+            assert!(object::is_owner(token, signer::address_of(owner)), 1);
 
             let auction_created_events = event::emitted_events<AuctionCreated>();
             let auction = vector::borrow(&auction_created_events, 0).auction;
 
-            assert!(auction == get_auction_object(name), 1);
+            assert!(auction == get_auction_object(name, signer::address_of(owner)), 1);
             assert!(primary_fungible_store::balance(signer::address_of(customer), buy_token) == 50, 1);
 
-        bid(customer, auction);
+        bid_on_auction(customer, auction);
 
         assert!(object::is_owner(token, signer::address_of(customer)), 1);
         assert!(primary_fungible_store::balance(signer::address_of(customer), buy_token) == 40, 1);

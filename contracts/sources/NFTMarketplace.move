@@ -224,13 +224,13 @@ address  0x9be9521129d83f8763fa73debaa043e789cfe9096e191d68c39a8e0afdb1e960 {
         }
 
         // retrieve active auctions
-    #[view]
-    public fun get_auction_object(name: String, owner_addr: address): Object<AuctionHouse> {
+        #[view]
+        public fun get_auction_object(name: String, owner_addr: address): Object<AuctionHouse> {
         let auction_seed = get_auction_seed(name);
         let auction_address = object::create_object_address(&owner_addr, auction_seed);
 
         object::address_to_object(auction_address)
-    }
+        }
         #[view]
         public fun get_collection_object(owner_addr: address): Object<Collection> {
             let collection_seed = get_collection_seed();
